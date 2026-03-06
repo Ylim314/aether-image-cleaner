@@ -1,81 +1,102 @@
-/**
- * processor.js (V2.1 - 修复通道错误版)
- */
-
 const Processor = {
-    checkReady: function() {
-        return typeof cv !== 'undefined' && !!window.cvReady;
-    },
-
-    cropBottom: function(canvas, pixels) {
-        if (pixels <= 0) return false;
-        const tempCanvas = document.createElement('canvas');
-        const newHeight = canvas.height - pixels;
-        if (newHeight <= 0) return false;
-
-        tempCanvas.width = canvas.width;
-        tempCanvas.height = newHeight;
-        const ctx = tempCanvas.getContext('2d');
-        ctx.drawImage(canvas, 0, 0, canvas.width, newHeight, 0, 0, canvas.width, newHeight);
-        canvas.height = newHeight;
-        canvas.getContext('2d').drawImage(tempCanvas, 0, 0);
-        return true;
-    },
-
-    smartInpaint: function(canvas, rect, radius) {
-        if (!this.checkReady()) return false;
-
-        let src = null, srcRGB = null, mask = null, dst = null;
-        try {
-            src = cv.imread(canvas);
-            srcRGB = new cv.Mat();
-            // 关键修正：转为 RGB 3通道
-            cv.cvtColor(src, srcRGB, cv.COLOR_RGBA2RGB, 0);
-
-            mask = new cv.Mat.zeros(src.rows, src.cols, cv.CV_8UC1);
-            let point1 = new cv.Point(Math.round(rect.x), Math.round(rect.y));
-            let point2 = new cv.Point(Math.round(rect.x + rect.w), Math.round(rect.y + rect.h));
-            cv.rectangle(mask, point1, point2, [255, 255, 255, 255], -1);
-
-            dst = new cv.Mat();
-            cv.inpaint(srcRGB, mask, dst, radius, cv.INPAINT_TELEA);
-            cv.imshow(canvas, dst);
-            return true;
-
-        } catch (err) {
-            console.error("Inpaint Error:", err);
-            return false;
-        } finally {
-            if (src) src.delete();
-            if (srcRGB) srcRGB.delete();
-            if (mask) mask.delete();
-            if (dst) dst.delete();
+    ensureReady() {
+        if (typeof cv === "undefined" || !window.cvReady) {
+            throw new Error("OpenCV is still loading. Wait for the engine banner to turn ready.");
         }
     },
 
-    usmSharpen: function(canvas, amount) {
-        if (!this.checkReady()) return false;
-        let src = null, srcRGB = null, blurred = null, dst = null;
+    cropBottom(canvas, pixels) {
+        if (!Number.isFinite(pixels) || pixels <= 0) {
+            throw new Error("Crop height must be greater than zero.");
+        }
+
+        const nextHeight = canvas.height - Math.round(pixels);
+        if (nextHeight < 8) {
+            throw new Error("Crop height is too large for the current image.");
+        }
+
+        const tempCanvas = document.createElement("canvas");
+        tempCanvas.width = canvas.width;
+        tempCanvas.height = nextHeight;
+
+        const tempCtx = tempCanvas.getContext("2d");
+        tempCtx.drawImage(canvas, 0, 0, canvas.width, nextHeight, 0, 0, canvas.width, nextHeight);
+
+        canvas.width = tempCanvas.width;
+        canvas.height = tempCanvas.height;
+        canvas.getContext("2d").drawImage(tempCanvas, 0, 0);
+    },
+
+    smartInpaint(canvas, rect, radius) {
+        this.ensureReady();
+
+        if (!rect || rect.w < 2 || rect.h < 2) {
+            throw new Error("Select a valid region before running inpaint.");
+        }
+
+        let src = null;
+        let srcRgb = null;
+        let mask = null;
+        let dstRgb = null;
+        let dstRgba = null;
+
         try {
             src = cv.imread(canvas);
-            srcRGB = new cv.Mat();
-            cv.cvtColor(src, srcRGB, cv.COLOR_RGBA2RGB, 0);
+            srcRgb = new cv.Mat();
+            cv.cvtColor(src, srcRgb, cv.COLOR_RGBA2RGB, 0);
 
-            blurred = new cv.Mat();
-            dst = new cv.Mat();
-            let ksize = new cv.Size(0, 0);
-            cv.GaussianBlur(srcRGB, blurred, ksize, 3);
-            cv.addWeighted(srcRGB, 1 + amount, blurred, -amount, 0, dst);
-            cv.imshow(canvas, dst);
-            return true;
-        } catch (err) {
-            console.error("Sharpen Error:", err);
-            return false;
+            mask = new cv.Mat.zeros(src.rows, src.cols, cv.CV_8UC1);
+
+            const x1 = Math.max(0, Math.floor(rect.x));
+            const y1 = Math.max(0, Math.floor(rect.y));
+            const x2 = Math.min(src.cols, Math.ceil(rect.x + rect.w));
+            const y2 = Math.min(src.rows, Math.ceil(rect.y + rect.h));
+
+            cv.rectangle(mask, new cv.Point(x1, y1), new cv.Point(x2, y2), new cv.Scalar(255), -1);
+
+            dstRgb = new cv.Mat();
+            cv.inpaint(srcRgb, mask, dstRgb, radius, cv.INPAINT_TELEA);
+
+            dstRgba = new cv.Mat();
+            cv.cvtColor(dstRgb, dstRgba, cv.COLOR_RGB2RGBA, 0);
+            cv.imshow(canvas, dstRgba);
         } finally {
             if (src) src.delete();
-            if (srcRGB) srcRGB.delete();
+            if (srcRgb) srcRgb.delete();
+            if (mask) mask.delete();
+            if (dstRgb) dstRgb.delete();
+            if (dstRgba) dstRgba.delete();
+        }
+    },
+
+    usmSharpen(canvas, amount) {
+        this.ensureReady();
+
+        let src = null;
+        let srcRgb = null;
+        let blurred = null;
+        let dstRgb = null;
+        let dstRgba = null;
+
+        try {
+            src = cv.imread(canvas);
+            srcRgb = new cv.Mat();
+            cv.cvtColor(src, srcRgb, cv.COLOR_RGBA2RGB, 0);
+
+            blurred = new cv.Mat();
+            dstRgb = new cv.Mat();
+            cv.GaussianBlur(srcRgb, blurred, new cv.Size(0, 0), 3, 3, cv.BORDER_DEFAULT);
+            cv.addWeighted(srcRgb, 1 + amount, blurred, -amount, 0, dstRgb);
+
+            dstRgba = new cv.Mat();
+            cv.cvtColor(dstRgb, dstRgba, cv.COLOR_RGB2RGBA, 0);
+            cv.imshow(canvas, dstRgba);
+        } finally {
+            if (src) src.delete();
+            if (srcRgb) srcRgb.delete();
             if (blurred) blurred.delete();
-            if (dst) dst.delete();
+            if (dstRgb) dstRgb.delete();
+            if (dstRgba) dstRgba.delete();
         }
     }
 };

@@ -1,817 +1,583 @@
-/**
- * app.js
- * 负责页面交互、文件校验、历史记录和处理状态管理
- */
-
-const LIMITS = {
-    maxFileSizeBytes: 20 * 1024 * 1024,
-    maxDimension: 8192,
-    maxPixels: 40_000_000,
-    memoryWarningBytes: 160 * 1024 * 1024,
-    historySoftLimitBytes: 240 * 1024 * 1024,
-    defaultHistorySteps: 10,
-    reducedHistorySteps: 5,
-    reducedHistoryPixels: 12_000_000,
-    minSelectionSize: 8
-};
-
-const ALLOWED_MIME_TYPES = new Set([
-    'image/jpeg',
-    'image/png',
-    'image/webp'
-]);
+const MAX_FILE_BYTES = 12 * 1024 * 1024;
+const MAX_WORKING_PIXELS = 12_000_000;
+const MAX_WORKING_DIMENSION = 4096;
+const HISTORY_LIMIT = 6;
+const ACCEPTED_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
 
 const els = {
-    dropZone: document.getElementById('drop-zone'),
-    fileInput: document.getElementById('file-input'),
-    workspace: document.getElementById('workspace'),
-    canvas: document.getElementById('main-canvas'),
-    selectionBox: document.getElementById('selection-box'),
-    tabBtns: document.querySelectorAll('.tab-btn'),
-    tabPanels: document.querySelectorAll('.tab-panel'),
-    uploadWarning: document.getElementById('upload-warning'),
-    uploadError: document.getElementById('upload-error'),
-    fileMeta: document.getElementById('file-meta'),
-    processStatus: document.getElementById('process-status'),
-    cropSlider: document.getElementById('crop-slider'),
-    cropVal: document.getElementById('crop-val'),
-    radiusSlider: document.getElementById('radius-slider'),
-    radiusVal: document.getElementById('radius-val'),
-    sharpSlider: document.getElementById('sharp-slider'),
-    sharpVal: document.getElementById('sharp-val'),
-    exportFormat: document.getElementById('export-format'),
-    exportQuality: document.getElementById('export-quality'),
-    exportQualityVal: document.getElementById('export-quality-val'),
-    btnApplyCrop: document.getElementById('btn-apply-crop'),
-    btnApplyInpaint: document.getElementById('btn-apply-inpaint'),
-    btnApplyEnhance: document.getElementById('btn-apply-enhance'),
-    btnCompareToggle: document.getElementById('btn-compare-toggle'),
-    btnCompareHold: document.getElementById('btn-compare-hold'),
-    btnUndo: document.getElementById('btn-undo'),
-    btnRedo: document.getElementById('btn-redo'),
-    btnReset: document.getElementById('btn-reset'),
-    btnDownload: document.getElementById('btn-download')
+    dropZone: document.getElementById("drop-zone"),
+    fileInput: document.getElementById("file-input"),
+    workspace: document.getElementById("workspace"),
+    canvas: document.getElementById("main-canvas"),
+    canvasShell: document.getElementById("canvas-shell"),
+    selectionBox: document.getElementById("selection-box"),
+    engineStatus: document.getElementById("engine-status"),
+    engineStatusText: document.getElementById("engine-status-text"),
+    busyOverlay: document.getElementById("busy-overlay"),
+    busyLabel: document.getElementById("busy-label"),
+    inlineMessage: document.getElementById("inline-message"),
+    imageMeta: document.getElementById("image-meta"),
+    historyMeta: document.getElementById("history-meta"),
+    tabBtns: Array.from(document.querySelectorAll(".tab-btn")),
+    tabPanels: Array.from(document.querySelectorAll(".tab-panel")),
+    cropSlider: document.getElementById("crop-slider"),
+    cropVal: document.getElementById("crop-val"),
+    radiusSlider: document.getElementById("radius-slider"),
+    radiusVal: document.getElementById("radius-val"),
+    sharpSlider: document.getElementById("sharp-slider"),
+    sharpVal: document.getElementById("sharp-val"),
+    btnApplyCrop: document.getElementById("btn-apply-crop"),
+    btnApplyInpaint: document.getElementById("btn-apply-inpaint"),
+    btnApplyEnhance: document.getElementById("btn-apply-enhance"),
+    btnReset: document.getElementById("btn-reset"),
+    btnDownload: document.getElementById("btn-download"),
+    btnUndo: document.getElementById("btn-undo"),
+    btnRedo: document.getElementById("btn-redo"),
+    btnCompare: document.getElementById("btn-compare")
 };
 
-let state = {
-    originalSnapshot: null,
+const state = {
+    busy: false,
+    compareVisible: false,
     isSelecting: false,
     activePointerId: null,
     startX: 0,
     startY: 0,
     selectionRect: null,
-    isProcessing: false,
-    statusTimer: null,
-    history: [],
-    historyBytes: 0,
-    redo: [],
-    redoBytes: 0,
-    compareSource: null, // 'toggle' | 'hold' | null
-    compareSnapshot: null
+    fileInfo: null,
+    history: {
+        undo: [],
+        redo: []
+    },
+    currentSnapshot: null,
+    originalSnapshot: null
 };
 
 function init() {
-    if (typeof window.cvReady === 'undefined') {
-        window.cvReady = false;
-    }
+    bindUploadEvents();
+    bindTabEvents();
+    bindSliderEvents();
+    bindSelectionEvents();
+    bindActionEvents();
+    updateHistoryUi();
+}
 
-    els.dropZone.addEventListener('click', () => els.fileInput.click());
-    els.fileInput.addEventListener('change', handleFileSelect);
-    els.dropZone.addEventListener('dragover', handleDragOver);
-    els.dropZone.addEventListener('dragleave', handleDragLeave);
-    els.dropZone.addEventListener('drop', handleDrop);
+function bindUploadEvents() {
+    els.dropZone.addEventListener("click", () => els.fileInput.click());
+    els.dropZone.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            els.fileInput.click();
+        }
+    });
 
-    els.tabBtns.forEach((btn) => btn.addEventListener('click', switchTab));
+    els.fileInput.addEventListener("change", (event) => {
+        const [file] = event.target.files;
+        if (file) {
+            void loadImageFile(file);
+        }
+        event.target.value = "";
+    });
 
-    els.cropSlider.oninput = (e) => {
-        els.cropVal.textContent = `${e.target.value}px`;
+    ["dragenter", "dragover"].forEach((eventName) => {
+        els.dropZone.addEventListener(eventName, (event) => {
+            event.preventDefault();
+            els.dropZone.classList.add("dragover");
+        });
+    });
+
+    ["dragleave", "drop"].forEach((eventName) => {
+        els.dropZone.addEventListener(eventName, (event) => {
+            event.preventDefault();
+            els.dropZone.classList.remove("dragover");
+        });
+    });
+
+    els.dropZone.addEventListener("drop", (event) => {
+        const [file] = event.dataTransfer.files;
+        if (file) {
+            void loadImageFile(file);
+        }
+    });
+}
+
+function bindTabEvents() {
+    els.tabBtns.forEach((button) => {
+        button.addEventListener("click", () => switchTab(button.dataset.tab));
+    });
+}
+
+function bindSliderEvents() {
+    els.cropSlider.addEventListener("input", (event) => {
+        els.cropVal.textContent = `${event.target.value} px`;
+    });
+
+    els.radiusSlider.addEventListener("input", (event) => {
+        els.radiusVal.textContent = `${event.target.value} px`;
+    });
+
+    els.sharpSlider.addEventListener("input", (event) => {
+        els.sharpVal.textContent = (Number(event.target.value) / 10).toFixed(1);
+    });
+}
+
+function bindSelectionEvents() {
+    els.canvasShell.addEventListener("pointerdown", (event) => {
+        if (!isInpaintTabActive() || state.busy || state.compareVisible) return;
+        if (event.target !== els.canvas) return;
+
+        event.preventDefault();
+        els.canvas.setPointerCapture(event.pointerId);
+        state.activePointerId = event.pointerId;
+        state.isSelecting = true;
+
+        const point = getCanvasDisplayPoint(event);
+        state.startX = point.x;
+        state.startY = point.y;
+
+        updateSelectionBox(point.x, point.y, 0, 0);
+        els.selectionBox.style.display = "block";
+        els.btnApplyInpaint.disabled = true;
+    });
+
+    els.canvasShell.addEventListener("pointermove", (event) => {
+        if (!state.isSelecting || event.pointerId !== state.activePointerId) return;
+        const point = getCanvasDisplayPoint(event);
+        updateSelectionBox(state.startX, state.startY, point.x - state.startX, point.y - state.startY);
+    });
+
+    const stopSelection = (event) => {
+        if (!state.isSelecting || event.pointerId !== state.activePointerId) return;
+        state.isSelecting = false;
+        state.activePointerId = null;
+        finalizeSelection();
     };
-    els.radiusSlider.oninput = (e) => {
-        els.radiusVal.textContent = `${e.target.value}px`;
-    };
-    els.sharpSlider.oninput = (e) => {
-        els.sharpVal.textContent = (Number.parseInt(e.target.value, 10) / 10).toFixed(1);
-    };
-    els.exportQuality.oninput = (e) => {
-        els.exportQualityVal.textContent = `${e.target.value}%`;
-    };
-    els.exportFormat.addEventListener('change', handleExportFormatChange);
 
-    setupCanvasInteraction();
-
-    els.btnApplyCrop.addEventListener('click', onApplyCrop);
-    els.btnApplyInpaint.addEventListener('click', onApplyInpaint);
-    els.btnApplyEnhance.addEventListener('click', onApplyEnhance);
-    els.btnCompareToggle.addEventListener('click', onCompareToggle);
-    setupCompareHoldEvents();
-    els.btnUndo.addEventListener('click', undo);
-    els.btnRedo.addEventListener('click', redo);
-    els.btnReset.addEventListener('click', resetToOriginal);
-    els.btnDownload.addEventListener('click', downloadImage);
-    window.addEventListener('keydown', handleGlobalShortcuts);
-
-    handleExportFormatChange();
-    updateActionButtons();
+    els.canvasShell.addEventListener("pointerup", stopSelection);
+    els.canvasShell.addEventListener("pointercancel", stopSelection);
 }
 
-function handleFileSelect(e) {
-    if (e.target.files.length) {
-        void loadImage(e.target.files[0]);
-    }
-    e.target.value = '';
+function bindActionEvents() {
+    els.btnApplyCrop.addEventListener("click", async () => {
+        await runOperation("Applying bottom crop...", () => {
+            Processor.cropBottom(els.canvas, Number(els.cropSlider.value));
+        }, "Crop applied.");
+    });
+
+    els.btnApplyInpaint.addEventListener("click", async () => {
+        if (!state.selectionRect) {
+            setInlineMessage("Select a region before applying inpaint.", true);
+            return;
+        }
+
+        await runOperation("Running local inpaint...", () => {
+            Processor.smartInpaint(els.canvas, state.selectionRect, Number(els.radiusSlider.value));
+        }, "Inpaint applied.");
+    });
+
+    els.btnApplyEnhance.addEventListener("click", async () => {
+        await runOperation("Applying sharpen pass...", () => {
+            Processor.usmSharpen(els.canvas, Number(els.sharpSlider.value) / 10);
+        }, "Sharpen applied.");
+    });
+
+    els.btnReset.addEventListener("click", async () => {
+        if (!state.originalSnapshot) return;
+        await restoreToOriginal();
+    });
+
+    els.btnDownload.addEventListener("click", async () => {
+        if (!state.currentSnapshot || state.busy) return;
+        const link = document.createElement("a");
+        link.download = `aether-clean-${Date.now()}.png`;
+        link.href = URL.createObjectURL(state.currentSnapshot);
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+    });
+
+    els.btnUndo.addEventListener("click", async () => {
+        await undo();
+    });
+
+    els.btnRedo.addEventListener("click", async () => {
+        await redo();
+    });
+
+    ["pointerdown", "pointerenter"].forEach((eventName) => {
+        els.btnCompare.addEventListener(eventName, async (event) => {
+            if (eventName === "pointerenter" && event.buttons !== 1) return;
+            await showCompare();
+        });
+    });
+
+    ["pointerup", "pointerleave", "pointercancel"].forEach((eventName) => {
+        els.btnCompare.addEventListener(eventName, async () => {
+            await hideCompare();
+        });
+    });
 }
 
-function handleDragOver(e) {
-    e.preventDefault();
-    els.dropZone.style.borderColor = '#0071e3';
-}
-
-function handleDragLeave() {
-    els.dropZone.style.borderColor = '#d2d2d7';
-}
-
-function handleDrop(e) {
-    e.preventDefault();
-    els.dropZone.style.borderColor = '#d2d2d7';
-    if (e.dataTransfer.files.length) {
-        void loadImage(e.dataTransfer.files[0]);
-    }
-}
-
-async function loadImage(file) {
-    if (state.isProcessing) return;
-
-    deactivateCompare(true);
-    clearUploadMessages();
-    clearProcessStatus();
-
-    const validationError = validateFile(file);
-    if (validationError) {
-        showUploadError(validationError);
-        return;
-    }
-
-    showProcessStatus('正在读取图片...', 'info');
-
-    let decoded = null;
+async function loadImageFile(file) {
     try {
-        decoded = await decodeImage(file);
-    } catch (err) {
-        console.error('Image decode error:', err);
-        showUploadError('图片读取失败，请确认文件未损坏。');
-        showProcessStatus('图片读取失败', 'error', 1800);
-        return;
+        validateFile(file);
+        setBusy(true, "Preparing image...");
+
+        const bitmap = await createImageBitmap(file);
+        const normalized = normalizeDimensions(bitmap.width, bitmap.height);
+        drawBitmapToCanvas(bitmap, normalized.width, normalized.height);
+        bitmap.close();
+
+        state.fileInfo = {
+            name: file.name,
+            size: file.size,
+            originalWidth: normalized.originalWidth,
+            originalHeight: normalized.originalHeight,
+            workingWidth: normalized.width,
+            workingHeight: normalized.height,
+            scaled: normalized.scaled
+        };
+
+        const snapshot = await canvasToBlob(els.canvas);
+        state.originalSnapshot = snapshot;
+        state.currentSnapshot = snapshot;
+        state.history.undo = [];
+        state.history.redo = [];
+        resetSelection();
+
+        els.workspace.classList.remove("hidden");
+        updateMetaUi();
+        updateHistoryUi();
+        updateActionAvailability();
+
+        const note = normalized.scaled
+            ? `Loaded ${file.name}. Working copy scaled from ${normalized.originalWidth}x${normalized.originalHeight} to ${normalized.width}x${normalized.height}.`
+            : `Loaded ${file.name}.`;
+        setInlineMessage(note, false);
+    } catch (error) {
+        setInlineMessage(error.message, true);
+    } finally {
+        setBusy(false);
     }
-
-    const { img, url, width, height } = decoded;
-    const pixels = width * height;
-    const estimatedBytes = pixels * 4;
-
-    if (width > LIMITS.maxDimension || height > LIMITS.maxDimension) {
-        URL.revokeObjectURL(url);
-        showUploadError(`图片尺寸过大，最长边不能超过 ${LIMITS.maxDimension}px。`);
-        clearProcessStatus();
-        return;
-    }
-
-    if (pixels > LIMITS.maxPixels) {
-        URL.revokeObjectURL(url);
-        showUploadError(`图片像素过大，不能超过 ${Math.round(LIMITS.maxPixels / 1_000_000)}MP。`);
-        clearProcessStatus();
-        return;
-    }
-
-    if (estimatedBytes > LIMITS.memoryWarningBytes) {
-        showUploadWarning(`该图片较大，预计占用 ${formatBytes(estimatedBytes)} 内存，处理可能变慢。`);
-    }
-
-    renderImageElement(img);
-    URL.revokeObjectURL(url);
-
-    state.originalSnapshot = createSnapshotFromCanvas();
-    clearHistoryStacks();
-    resetSelection();
-
-    els.dropZone.style.display = 'none';
-    els.workspace.style.display = 'grid';
-    els.fileMeta.style.display = 'block';
-    els.fileMeta.textContent = `${file.name} | ${width}x${height} | ${formatBytes(file.size)} | 预计内存 ${formatBytes(estimatedBytes)}`;
-
-    showProcessStatus('图片加载完成', 'success', 1200);
-    updateActionButtons();
 }
 
 function validateFile(file) {
-    if (!ALLOWED_MIME_TYPES.has(file.type)) {
-        return '文件格式不支持，仅支持 JPG / PNG / WebP。';
+    if (!ACCEPTED_TYPES.has(file.type)) {
+        throw new Error("Only PNG, JPG, and WebP files are supported.");
     }
-    if (file.size > LIMITS.maxFileSizeBytes) {
-        return `文件过大，最大支持 ${Math.round(LIMITS.maxFileSizeBytes / 1024 / 1024)}MB。`;
+
+    if (file.size > MAX_FILE_BYTES) {
+        throw new Error("File is larger than 12 MB. Use a smaller file or export a compressed version first.");
     }
-    return null;
 }
 
-function decodeImage(file) {
-    return new Promise((resolve, reject) => {
-        const url = URL.createObjectURL(file);
-        const img = new Image();
-        img.onload = () => {
-            resolve({
-                img,
-                url,
-                width: img.naturalWidth,
-                height: img.naturalHeight
-            });
-        };
-        img.onerror = () => {
-            URL.revokeObjectURL(url);
-            reject(new Error('Failed to decode image'));
-        };
-        img.src = url;
+function normalizeDimensions(width, height) {
+    let scale = 1;
+    const maxSide = Math.max(width, height);
+    const totalPixels = width * height;
+
+    if (maxSide > MAX_WORKING_DIMENSION) {
+        scale = Math.min(scale, MAX_WORKING_DIMENSION / maxSide);
+    }
+
+    if (totalPixels > MAX_WORKING_PIXELS) {
+        scale = Math.min(scale, Math.sqrt(MAX_WORKING_PIXELS / totalPixels));
+    }
+
+    return {
+        originalWidth: width,
+        originalHeight: height,
+        width: Math.max(1, Math.round(width * scale)),
+        height: Math.max(1, Math.round(height * scale)),
+        scaled: scale < 1
+    };
+}
+
+function drawBitmapToCanvas(bitmap, width, height) {
+    els.canvas.width = width;
+    els.canvas.height = height;
+    const ctx = els.canvas.getContext("2d");
+    ctx.clearRect(0, 0, width, height);
+    ctx.drawImage(bitmap, 0, 0, width, height);
+}
+
+async function runOperation(label, operation, successMessage) {
+    if (!state.currentSnapshot || state.busy || state.compareVisible) return;
+
+    try {
+        setBusy(true, label);
+        resetSelection();
+
+        const beforeSnapshot = state.currentSnapshot;
+        await nextFrame();
+        operation();
+
+        state.history.undo.push(beforeSnapshot);
+        if (state.history.undo.length > HISTORY_LIMIT) {
+            state.history.undo.shift();
+        }
+        state.history.redo = [];
+        state.currentSnapshot = await canvasToBlob(els.canvas);
+
+        updateHistoryUi();
+        updateActionAvailability();
+        updateMetaUi();
+        setInlineMessage(successMessage, false);
+    } catch (error) {
+        setInlineMessage(error.message, true);
+    } finally {
+        setBusy(false);
+    }
+}
+
+async function restoreToOriginal() {
+    if (!state.originalSnapshot) return;
+
+    try {
+        setBusy(true, "Restoring original...");
+        state.history.undo = [];
+        state.history.redo = [];
+        state.currentSnapshot = state.originalSnapshot;
+        await drawBlobToCanvas(state.originalSnapshot);
+        resetSelection();
+        updateHistoryUi();
+        updateActionAvailability();
+        updateMetaUi();
+        setInlineMessage("Restored original working copy.", false);
+    } catch (error) {
+        setInlineMessage(error.message, true);
+    } finally {
+        setBusy(false);
+    }
+}
+
+async function undo() {
+    if (!state.history.undo.length || state.busy) return;
+
+    try {
+        setBusy(true, "Undoing...");
+        state.history.redo.push(state.currentSnapshot);
+        state.currentSnapshot = state.history.undo.pop();
+        await drawBlobToCanvas(state.currentSnapshot);
+        resetSelection();
+        updateHistoryUi();
+        updateActionAvailability();
+        setInlineMessage("Undo applied.", false);
+    } catch (error) {
+        setInlineMessage(error.message, true);
+    } finally {
+        setBusy(false);
+    }
+}
+
+async function redo() {
+    if (!state.history.redo.length || state.busy) return;
+
+    try {
+        setBusy(true, "Redoing...");
+        state.history.undo.push(state.currentSnapshot);
+        if (state.history.undo.length > HISTORY_LIMIT) {
+            state.history.undo.shift();
+        }
+        state.currentSnapshot = state.history.redo.pop();
+        await drawBlobToCanvas(state.currentSnapshot);
+        resetSelection();
+        updateHistoryUi();
+        updateActionAvailability();
+        setInlineMessage("Redo applied.", false);
+    } catch (error) {
+        setInlineMessage(error.message, true);
+    } finally {
+        setBusy(false);
+    }
+}
+
+async function showCompare() {
+    if (!state.originalSnapshot || state.busy || state.compareVisible) return;
+    state.compareVisible = true;
+    await drawBlobToCanvas(state.originalSnapshot);
+    setInlineMessage("Showing original working copy. Release to return to the edited image.", false);
+}
+
+async function hideCompare() {
+    if (!state.compareVisible || !state.currentSnapshot) return;
+    state.compareVisible = false;
+    await drawBlobToCanvas(state.currentSnapshot);
+    setInlineMessage("Returned to current edit.", false);
+}
+
+function switchTab(targetTab) {
+    els.tabBtns.forEach((button) => {
+        button.classList.toggle("active", button.dataset.tab === targetTab);
     });
-}
 
-function renderImageElement(img) {
-    els.canvas.width = img.naturalWidth || img.width;
-    els.canvas.height = img.naturalHeight || img.height;
-    const ctx = els.canvas.getContext('2d');
-    ctx.clearRect(0, 0, els.canvas.width, els.canvas.height);
-    ctx.drawImage(img, 0, 0);
-}
+    els.tabPanels.forEach((panel) => {
+        panel.classList.toggle("active", panel.id === `tab-${targetTab}`);
+    });
 
-function switchTab(e) {
-    deactivateCompare(true);
-    const target = e.target.dataset.tab;
-    setActiveTab(target);
-}
-
-function setActiveTab(target) {
-    if (!target) return;
-    const targetButton = Array.from(els.tabBtns).find((btn) => btn.dataset.tab === target);
-    if (!targetButton) return;
-
-    els.tabBtns.forEach((btn) => btn.classList.remove('active'));
-    els.tabPanels.forEach((panel) => panel.classList.remove('active'));
-    targetButton.classList.add('active');
-    document.getElementById(`tab-${target}`).classList.add('active');
     resetSelection();
+    setInlineMessage(
+        targetTab === "inpaint"
+            ? "Drag a rectangle directly on the image to define the inpaint area."
+            : "Selection cleared.",
+        false
+    );
 }
 
-function handleExportFormatChange() {
-    const isLossless = els.exportFormat.value === 'png';
-    els.exportQuality.disabled = isLossless;
-    els.exportQualityVal.textContent = isLossless
-        ? '无损'
-        : `${els.exportQuality.value}%`;
-    updateActionButtons();
+function isInpaintTabActive() {
+    return document.getElementById("tab-inpaint").classList.contains("active");
 }
 
-function handleGlobalShortcuts(e) {
-    if (isTextInputFocused()) return;
+function getCanvasDisplayPoint(event) {
+    const rect = els.canvas.getBoundingClientRect();
+    const x = clamp(event.clientX - rect.left, 0, rect.width);
+    const y = clamp(event.clientY - rect.top, 0, rect.height);
+    return { x, y };
+}
 
-    const key = e.key.toLowerCase();
-    const hasCommand = e.ctrlKey || e.metaKey;
+function updateSelectionBox(x, y, width, height) {
+    const left = width < 0 ? x + width : x;
+    const top = height < 0 ? y + height : y;
+    const safeWidth = Math.abs(width);
+    const safeHeight = Math.abs(height);
 
-    if (hasCommand && key === 'z') {
-        e.preventDefault();
-        if (e.shiftKey) {
-            redo();
-        } else {
-            undo();
-        }
+    els.selectionBox.style.left = `${left + els.canvas.offsetLeft}px`;
+    els.selectionBox.style.top = `${top + els.canvas.offsetTop}px`;
+    els.selectionBox.style.width = `${safeWidth}px`;
+    els.selectionBox.style.height = `${safeHeight}px`;
+}
+
+function finalizeSelection() {
+    const canvasRect = els.canvas.getBoundingClientRect();
+    const boxStyle = window.getComputedStyle(els.selectionBox);
+    const left = parseFloat(boxStyle.left) - els.canvas.offsetLeft;
+    const top = parseFloat(boxStyle.top) - els.canvas.offsetTop;
+    const width = parseFloat(boxStyle.width);
+    const height = parseFloat(boxStyle.height);
+
+    if (width < 8 || height < 8) {
+        resetSelection();
+        setInlineMessage("Selection was too small. Drag a larger region.", true);
         return;
     }
 
-    if (hasCommand && key === 'y') {
-        e.preventDefault();
-        redo();
-        return;
-    }
+    const scaleX = els.canvas.width / canvasRect.width;
+    const scaleY = els.canvas.height / canvasRect.height;
 
-    if (hasCommand && key === 's') {
-        e.preventDefault();
-        downloadImage();
-        return;
-    }
-
-    if (!hasCommand && !e.altKey) {
-        if (key === '1') {
-            setActiveTab('crop');
-        } else if (key === '2') {
-            setActiveTab('inpaint');
-        } else if (key === '3') {
-            setActiveTab('enhance');
-        }
-    }
-}
-
-function isTextInputFocused() {
-    const active = document.activeElement;
-    if (!active) return false;
-    const tag = active.tagName;
-    return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
-}
-
-function setupCanvasInteraction() {
-    const wrapper = els.canvas.parentElement;
-
-    wrapper.addEventListener('pointerdown', (e) => {
-        if (state.isProcessing || isComparing()) return;
-        if (!document.getElementById('tab-inpaint').classList.contains('active')) return;
-        if (e.target !== els.canvas && e.target !== els.selectionBox) return;
-
-        state.activePointerId = e.pointerId;
-        state.isSelecting = true;
-
-        const rect = els.canvas.getBoundingClientRect();
-        state.startX = clamp(e.clientX - rect.left, 0, rect.width);
-        state.startY = clamp(e.clientY - rect.top, 0, rect.height);
-
-        els.selectionBox.style.display = 'block';
-        updateBox(state.startX, state.startY, 0, 0);
-        state.selectionRect = null;
-        updateActionButtons();
-
-        if (wrapper.setPointerCapture) {
-            wrapper.setPointerCapture(e.pointerId);
-        }
-
-        e.preventDefault();
-    });
-
-    window.addEventListener('pointermove', (e) => {
-        if (!state.isSelecting) return;
-        if (e.pointerId !== state.activePointerId) return;
-
-        const rect = els.canvas.getBoundingClientRect();
-        const currentX = clamp(e.clientX - rect.left, 0, rect.width);
-        const currentY = clamp(e.clientY - rect.top, 0, rect.height);
-
-        updateBox(state.startX, state.startY, currentX - state.startX, currentY - state.startY);
-    });
-
-    const onSelectionEnd = (e) => {
-        if (!state.isSelecting) return;
-        if (typeof e.pointerId !== 'undefined' && e.pointerId !== state.activePointerId) return;
-
-        state.isSelecting = false;
-        state.activePointerId = null;
-
-        const rect = els.canvas.getBoundingClientRect();
-        const scaleX = els.canvas.width / rect.width;
-        const scaleY = els.canvas.height / rect.height;
-        const boxStyle = window.getComputedStyle(els.selectionBox);
-
-        const displayX = Number.parseFloat(boxStyle.left) || 0;
-        const displayY = Number.parseFloat(boxStyle.top) || 0;
-        const displayW = Number.parseFloat(boxStyle.width) || 0;
-        const displayH = Number.parseFloat(boxStyle.height) || 0;
-
-        if (displayW >= LIMITS.minSelectionSize && displayH >= LIMITS.minSelectionSize) {
-            state.selectionRect = {
-                x: displayX * scaleX,
-                y: displayY * scaleY,
-                w: displayW * scaleX,
-                h: displayH * scaleY
-            };
-        } else {
-            resetSelection();
-        }
-
-        updateActionButtons();
+    state.selectionRect = {
+        x: left * scaleX,
+        y: top * scaleY,
+        w: width * scaleX,
+        h: height * scaleY
     };
 
-    window.addEventListener('pointerup', onSelectionEnd);
-    window.addEventListener('pointercancel', onSelectionEnd);
-}
-
-function updateBox(x, y, w, h) {
-    const left = w < 0 ? x + w : x;
-    const top = h < 0 ? y + h : y;
-    const width = Math.abs(w);
-    const height = Math.abs(h);
-
-    els.selectionBox.style.left = `${left}px`;
-    els.selectionBox.style.top = `${top}px`;
-    els.selectionBox.style.width = `${width}px`;
-    els.selectionBox.style.height = `${height}px`;
+    els.btnApplyInpaint.disabled = false;
+    setInlineMessage("Selection captured. You can now apply inpaint.", false);
 }
 
 function resetSelection() {
     state.selectionRect = null;
     state.isSelecting = false;
     state.activePointerId = null;
-    els.selectionBox.style.display = 'none';
-    updateActionButtons();
+    els.selectionBox.style.display = "none";
+    els.selectionBox.style.width = "0";
+    els.selectionBox.style.height = "0";
+    els.btnApplyInpaint.disabled = true;
 }
 
-function onApplyCrop() {
-    if (!state.originalSnapshot || state.isProcessing || isComparing()) return;
-
-    const pixels = Number.parseInt(els.cropSlider.value, 10);
-    if (!Number.isFinite(pixels) || pixels <= 0) return;
-    if (pixels >= els.canvas.height) {
-        showUploadError('裁剪高度不能大于图片高度。');
+function updateMetaUi() {
+    if (!state.fileInfo) {
+        els.imageMeta.textContent = "No image loaded";
         return;
     }
 
-    clearUploadMessages();
-    const historyAdded = recordHistoryBeforeChange();
-    runProcessing(
-        '正在应用裁剪...',
-        '裁剪完成',
-        () => Processor.cropBottom(els.canvas, pixels),
-        historyAdded
-    );
+    state.fileInfo.workingWidth = els.canvas.width;
+    state.fileInfo.workingHeight = els.canvas.height;
+
+    const scaledText = state.fileInfo.scaled
+        ? ` | working ${state.fileInfo.workingWidth}x${state.fileInfo.workingHeight} from ${state.fileInfo.originalWidth}x${state.fileInfo.originalHeight}`
+        : ` | ${state.fileInfo.workingWidth}x${state.fileInfo.workingHeight}`;
+
+    els.imageMeta.textContent = `${state.fileInfo.name} | ${formatBytes(state.fileInfo.size)}${scaledText}`;
 }
 
-function onApplyInpaint() {
-    if (!state.selectionRect || state.isProcessing || isComparing()) return;
-    if (!Processor.checkReady()) {
-        showProcessStatus('AI 引擎尚未就绪，请稍后重试。', 'error', 1800);
-        return;
-    }
-
-    const radius = Number.parseInt(els.radiusSlider.value, 10);
-    clearUploadMessages();
-    const historyAdded = recordHistoryBeforeChange();
-    runProcessing(
-        '正在智能修复...',
-        '修复完成',
-        () => Processor.smartInpaint(els.canvas, state.selectionRect, radius),
-        historyAdded
-    );
+function updateHistoryUi() {
+    els.historyMeta.textContent = `Undo ${state.history.undo.length} / ${HISTORY_LIMIT}`;
 }
 
-function onApplyEnhance() {
-    if (!state.originalSnapshot || state.isProcessing || isComparing()) return;
-    if (!Processor.checkReady()) {
-        showProcessStatus('AI 引擎尚未就绪，请稍后重试。', 'error', 1800);
-        return;
-    }
-
-    const amount = Number.parseInt(els.sharpSlider.value, 10) / 10;
-    clearUploadMessages();
-    const historyAdded = recordHistoryBeforeChange();
-    runProcessing(
-        '正在增强画质...',
-        '增强完成',
-        () => Processor.usmSharpen(els.canvas, amount),
-        historyAdded
-    );
+function updateActionAvailability() {
+    const hasImage = Boolean(state.currentSnapshot);
+    els.btnReset.disabled = !hasImage || state.busy;
+    els.btnDownload.disabled = !hasImage || state.busy;
+    els.btnUndo.disabled = !state.history.undo.length || state.busy;
+    els.btnRedo.disabled = !state.history.redo.length || state.busy;
+    els.btnCompare.disabled = !state.originalSnapshot || state.busy;
+    els.btnApplyCrop.disabled = !hasImage || state.busy;
+    els.btnApplyEnhance.disabled = !hasImage || state.busy;
+    els.btnApplyInpaint.disabled = !state.selectionRect || state.busy;
 }
 
-function runProcessing(loadingText, successText, executor, historyAdded) {
-    deactivateCompare(true);
-    state.isProcessing = true;
-    updateActionButtons();
-    showProcessStatus(loadingText, 'info');
-
-    window.setTimeout(() => {
-        let success = false;
-        try {
-            success = executor();
-        } catch (err) {
-            console.error('Processing error:', err);
-        }
-
-        state.isProcessing = false;
-
-        if (!success) {
-            if (historyAdded) {
-                discardLatestHistorySnapshot();
-            }
-            updateActionButtons();
-            showProcessStatus('处理失败，请重试。', 'error', 2200);
-            return;
-        }
-
-        resetSelection();
-        updateActionButtons();
-        showProcessStatus(successText, 'success', 1200);
-    }, 0);
+function setBusy(flag, label = "Processing...") {
+    state.busy = flag;
+    els.busyOverlay.classList.toggle("hidden", !flag);
+    els.busyLabel.textContent = label;
+    updateActionAvailability();
 }
 
-function setupCompareHoldEvents() {
-    const startHold = (e) => {
-        e.preventDefault();
-        if (state.compareSource === 'toggle') return;
-        if (activateCompare('hold')) {
-            els.btnCompareHold.classList.add('active');
-        }
-    };
-
-    const stopHold = () => {
-        if (state.compareSource !== 'hold') return;
-        deactivateCompare(true);
-        els.btnCompareHold.classList.remove('active');
-    };
-
-    els.btnCompareHold.addEventListener('pointerdown', startHold);
-    els.btnCompareHold.addEventListener('pointerup', stopHold);
-    els.btnCompareHold.addEventListener('pointercancel', stopHold);
-    els.btnCompareHold.addEventListener('pointerleave', stopHold);
-}
-
-function onCompareToggle() {
-    if (state.isProcessing || !state.originalSnapshot) return;
-
-    if (state.compareSource === 'toggle') {
-        deactivateCompare(true);
-        showProcessStatus('已退出对比', 'success', 900);
-        return;
-    }
-
-    if (activateCompare('toggle')) {
-        showProcessStatus('对比模式已开启', 'success', 900);
-    }
-}
-
-function activateCompare(source) {
-    if (!state.originalSnapshot || state.isProcessing) return false;
-    if (state.compareSource === source) return true;
-
-    if (isComparing()) {
-        deactivateCompare(true);
-    }
-
-    const current = createSnapshotFromCanvas();
-    if (!current) return false;
-
-    state.compareSnapshot = current;
-    restoreSnapshot(state.originalSnapshot);
-    state.compareSource = source;
-    updateActionButtons();
-    return true;
-}
-
-function deactivateCompare(silent) {
-    if (!isComparing()) return;
-
-    if (state.compareSnapshot) {
-        restoreSnapshot(state.compareSnapshot);
-    }
-
-    state.compareSnapshot = null;
-    state.compareSource = null;
-    updateActionButtons();
-
-    if (!silent) {
-        showProcessStatus('已退出对比', 'success', 900);
-    }
-}
-
-function isComparing() {
-    return state.compareSource !== null;
-}
-
-function createSnapshotFromCanvas() {
-    if (!els.canvas.width || !els.canvas.height) return null;
-    const ctx = els.canvas.getContext('2d');
-    const imageData = ctx.getImageData(0, 0, els.canvas.width, els.canvas.height);
-    return {
-        imageData,
-        bytes: imageData.data.byteLength
-    };
-}
-
-function restoreSnapshot(snapshot) {
-    els.canvas.width = snapshot.imageData.width;
-    els.canvas.height = snapshot.imageData.height;
-    els.canvas.getContext('2d').putImageData(snapshot.imageData, 0, 0);
-}
-
-function getHistoryStepLimit() {
-    const pixels = els.canvas.width * els.canvas.height;
-    return pixels > LIMITS.reducedHistoryPixels
-        ? LIMITS.reducedHistorySteps
-        : LIMITS.defaultHistorySteps;
-}
-
-function trimStack(stackName, bytesName, stepLimit) {
-    while (
-        state[stackName].length > stepLimit ||
-        state[bytesName] > LIMITS.historySoftLimitBytes
-    ) {
-        const removed = state[stackName].shift();
-        if (!removed) break;
-        state[bytesName] -= removed.bytes;
-    }
-}
-
-function pushToHistory(snapshot, clearRedo) {
-    state.history.push(snapshot);
-    state.historyBytes += snapshot.bytes;
-    trimStack('history', 'historyBytes', getHistoryStepLimit());
-    if (clearRedo) {
-        clearRedoStack();
-    }
-}
-
-function pushToRedo(snapshot) {
-    state.redo.push(snapshot);
-    state.redoBytes += snapshot.bytes;
-    trimStack('redo', 'redoBytes', getHistoryStepLimit());
-}
-
-function clearRedoStack() {
-    state.redo = [];
-    state.redoBytes = 0;
-}
-
-function clearHistoryStacks() {
-    state.history = [];
-    state.historyBytes = 0;
-    clearRedoStack();
-}
-
-function recordHistoryBeforeChange() {
-    const snapshot = createSnapshotFromCanvas();
-    if (!snapshot) return false;
-    pushToHistory(snapshot, true);
-    updateActionButtons();
-    return true;
-}
-
-function discardLatestHistorySnapshot() {
-    const last = state.history.pop();
-    if (last) {
-        state.historyBytes -= last.bytes;
-    }
-}
-
-function undo() {
-    if (state.isProcessing || isComparing() || !state.history.length) return;
-
-    const current = createSnapshotFromCanvas();
-    if (current) {
-        pushToRedo(current);
-    }
-
-    const previous = state.history.pop();
-    state.historyBytes -= previous.bytes;
-    restoreSnapshot(previous);
-    resetSelection();
-    updateActionButtons();
-    showProcessStatus('已撤销一步', 'success', 1000);
-}
-
-function redo() {
-    if (state.isProcessing || isComparing() || !state.redo.length) return;
-
-    const current = createSnapshotFromCanvas();
-    if (current) {
-        pushToHistory(current, false);
-    }
-
-    const next = state.redo.pop();
-    state.redoBytes -= next.bytes;
-    restoreSnapshot(next);
-    resetSelection();
-    updateActionButtons();
-    showProcessStatus('已重做一步', 'success', 1000);
-}
-
-function resetToOriginal() {
-    if (!state.originalSnapshot || state.isProcessing) return;
-
-    deactivateCompare(true);
-    restoreSnapshot(state.originalSnapshot);
-    clearHistoryStacks();
-    resetSelection();
-    updateActionButtons();
-    showProcessStatus('已重置到原图', 'success', 1200);
-}
-
-function downloadImage() {
-    if (!state.originalSnapshot || state.isProcessing || isComparing()) return;
-    try {
-        const exportConfig = getExportConfig();
-        const link = document.createElement('a');
-        link.download = `aether-cleaned-${Date.now()}.${exportConfig.extension}`;
-        link.href = els.canvas.toDataURL(exportConfig.mimeType, exportConfig.quality);
-        if (!link.href.startsWith(`data:${exportConfig.mimeType}`)) {
-            link.download = `aether-cleaned-${Date.now()}.png`;
-            link.href = els.canvas.toDataURL('image/png');
-            showProcessStatus('当前浏览器不支持所选格式，已回退为 PNG。', 'error', 1800);
-        }
-        link.click();
-        showProcessStatus('导出完成', 'success', 1000);
-    } catch (err) {
-        console.error('Export error:', err);
-        showProcessStatus('导出失败，请重试。', 'error', 2000);
-    }
-}
-
-function getExportConfig() {
-    const format = els.exportFormat.value;
-    const quality = Number.parseInt(els.exportQuality.value, 10) / 100;
-
-    if (format === 'jpeg') {
-        return {
-            mimeType: 'image/jpeg',
-            extension: 'jpg',
-            quality
-        };
-    }
-
-    if (format === 'webp') {
-        return {
-            mimeType: 'image/webp',
-            extension: 'webp',
-            quality
-        };
-    }
-
-    return {
-        mimeType: 'image/png',
-        extension: 'png',
-        quality: 1
-    };
-}
-
-function updateActionButtons() {
-    const hasImage = !!state.originalSnapshot;
-    const comparing = isComparing();
-    const lockEditing = state.isProcessing || comparing;
-
-    els.btnApplyCrop.disabled = lockEditing || !hasImage;
-    els.btnApplyEnhance.disabled = lockEditing || !hasImage;
-    els.btnApplyInpaint.disabled = lockEditing || !hasImage || !state.selectionRect;
-    els.btnUndo.disabled = lockEditing || state.history.length === 0;
-    els.btnRedo.disabled = lockEditing || state.redo.length === 0;
-    els.btnReset.disabled = lockEditing || !hasImage;
-    els.btnDownload.disabled = lockEditing || !hasImage;
-
-    els.btnCompareToggle.disabled = state.isProcessing || !hasImage;
-    els.btnCompareToggle.textContent = state.compareSource === 'toggle'
-        ? '🧿 关闭对比'
-        : '👁 对比开关';
-    els.btnCompareToggle.classList.toggle('active', state.compareSource === 'toggle');
-
-    els.btnCompareHold.disabled = state.isProcessing || !hasImage || state.compareSource === 'toggle';
-    els.exportFormat.disabled = state.isProcessing || !hasImage;
-    els.exportQuality.disabled = state.isProcessing || !hasImage || els.exportFormat.value === 'png';
-}
-
-function showUploadWarning(message) {
-    els.uploadWarning.textContent = message;
-    els.uploadWarning.style.display = 'block';
-}
-
-function showUploadError(message) {
-    els.uploadError.textContent = message;
-    els.uploadError.style.display = 'block';
-}
-
-function clearUploadMessages() {
-    els.uploadWarning.textContent = '';
-    els.uploadWarning.style.display = 'none';
-    els.uploadError.textContent = '';
-    els.uploadError.style.display = 'none';
-}
-
-function showProcessStatus(message, type, autoHideMs) {
-    if (state.statusTimer) {
-        clearTimeout(state.statusTimer);
-        state.statusTimer = null;
-    }
-
-    els.processStatus.className = 'status-inline';
-    if (type === 'success' || type === 'error') {
-        els.processStatus.classList.add(type);
-    }
-
-    els.processStatus.textContent = message;
-    els.processStatus.style.display = 'block';
-
-    if (autoHideMs) {
-        state.statusTimer = window.setTimeout(() => {
-            clearProcessStatus();
-        }, autoHideMs);
-    }
-}
-
-function clearProcessStatus() {
-    if (state.statusTimer) {
-        clearTimeout(state.statusTimer);
-        state.statusTimer = null;
-    }
-    els.processStatus.textContent = '';
-    els.processStatus.style.display = 'none';
-    els.processStatus.className = 'status-inline';
+function setInlineMessage(message, isError) {
+    els.inlineMessage.textContent = message;
+    els.inlineMessage.classList.toggle("error", Boolean(isError));
 }
 
 function formatBytes(bytes) {
     if (bytes < 1024) return `${bytes} B`;
-    const kb = bytes / 1024;
-    if (kb < 1024) return `${kb.toFixed(1)} KB`;
-    const mb = kb / 1024;
-    return `${mb.toFixed(1)} MB`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function clamp(value, min, max) {
-    return Math.max(min, Math.min(max, value));
+    return Math.min(max, Math.max(min, value));
 }
+
+function nextFrame() {
+    return new Promise((resolve) => requestAnimationFrame(() => resolve()));
+}
+
+function canvasToBlob(canvas) {
+    return new Promise((resolve, reject) => {
+        canvas.toBlob((blob) => {
+            if (!blob) {
+                reject(new Error("Failed to capture the current canvas state."));
+                return;
+            }
+            resolve(blob);
+        }, "image/png");
+    });
+}
+
+async function drawBlobToCanvas(blob) {
+    const bitmap = await createImageBitmap(blob);
+    drawBitmapToCanvas(bitmap, bitmap.width, bitmap.height);
+    bitmap.close();
+}
+
+function setEngineStatus(kind, message) {
+    els.engineStatus.className = `status-banner ${kind}`;
+    els.engineStatusText.textContent = message;
+}
+
+window.onOpenCvReady = function onOpenCvReady() {
+    if (typeof cv !== "undefined" && typeof cv.getBuildInformation === "function") {
+        window.cvReady = true;
+        setEngineStatus("ready", "Local OpenCV engine ready.");
+        return;
+    }
+
+    window.setTimeout(window.onOpenCvReady, 120);
+};
+
+window.onOpenCvError = function onOpenCvError() {
+    window.cvReady = false;
+    setEngineStatus("error", "OpenCV failed to load from js/opencv.js. Refresh the page after restoring the file.");
+};
 
 init();

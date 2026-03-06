@@ -1,193 +1,157 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
-    <script async src="https://www.googletagmanager.com/gtag/js?id=G-9E5YY8PP0B"></script>
-    <script>
-      window.dataLayer = window.dataLayer || [];
-      function gtag(){dataLayer.push(arguments);}
-      gtag('js', new Date());
-
-      gtag('config', 'G-9E5YY8PP0B');
-    </script>
-
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Aether Image Cleaner - 在线 AI 图片清理工具 (无需Python)</title>
-    
-    <meta name="description" content="Aether Image Cleaner 是一个在线 AI 图片清理工具，支持智能修复、裁剪清理和画质增强。纯前端本地处理，无需上传服务器。">
-    <meta name="keywords" content="AI图片清理, 图片去水印, 在线修图, OpenCV.js, 本地图片处理, 图片修复">
-    <meta name="author" content="Aether Image Cleaner">
-    
-    <meta property="og:title" content="Aether Image Cleaner - 图片清理工具">
-    <meta property="og:description" content="一键清理干扰区域，智能修复背景，纯本地处理。">
+    <title>Aether Image Cleaner | Browser-Based AI Image Cleanup</title>
+    <meta
+        name="description"
+        content="Aether Image Cleaner is a browser-based image cleanup tool with crop, inpaint, compare, undo, and local-only processing."
+    >
+    <meta
+        name="keywords"
+        content="image cleaner, watermark cleanup, opencv.js, browser image editor, local image processing"
+    >
+    <meta name="author" content="Ylim314">
+    <meta property="og:title" content="Aether Image Cleaner">
+    <meta
+        property="og:description"
+        content="Clean AI-generated images directly in the browser with local processing, undo/redo, and compare mode."
+    >
     <meta property="og:type" content="website">
-    <meta property="og:url" content="https://github.com/Ylim314/aether-image-cleaner">
-    <meta property="og:image" content="https://github.com/Ylim314/aether-image-cleaner">
-
+    <meta name="theme-color" content="#121212">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="css/style.css">
-
-    <script type="application/ld+json">
-    {
-      "@context": "https://schema.org",
-      "@type": "SoftwareApplication",
-      "name": "Aether Image Cleaner",
-      "applicationCategory": "MultimediaApplication",
-      "operatingSystem": "Web Browser",
-      "offers": {
-        "@type": "Offer",
-        "price": "0",
-        "priceCurrency": "CNY"
-      },
-      "url": "https://github.com/Ylim314/aether-image-cleaner",
-      "description": "基于浏览器的图片清理、修复与画质增强工具。"
-    }
-    </script>
 </head>
 <body>
+    <main class="page-shell">
+        <section class="hero">
+            <div class="hero-copy">
+                <p class="eyebrow">Aether Image Cleaner</p>
+                <h1>Clean AI image output in the browser, with no server upload.</h1>
+                <p class="hero-text">
+                    Built as a practical static tool for fast image cleanup. Crop, inpaint, compare,
+                    undo, and export from one page while keeping the entire workflow local.
+                </p>
+            </div>
+            <div class="hero-cards">
+                <article class="hero-card">
+                    <span class="card-kicker">Privacy</span>
+                    <strong>Local-only processing</strong>
+                    <p>Your image stays in the browser during editing and export.</p>
+                </article>
+                <article class="hero-card">
+                    <span class="card-kicker">Workflow</span>
+                    <strong>Reversible editing</strong>
+                    <p>Undo, redo, reset, and hold-to-compare before committing exports.</p>
+                </article>
+                <article class="hero-card">
+                    <span class="card-kicker">Guardrails</span>
+                    <strong>Large image protection</strong>
+                    <p>Oversized uploads are validated and scaled to a safer working resolution.</p>
+                </article>
+            </div>
+        </section>
 
-<main class="container">
-    <header>
-        <h1>Aether 图片清理工具 <span class="badge">PRO</span></h1>
-        <p class="subtitle">智能识别周围纹理，实现无痕修复 (本地引擎版)</p>
-    </header>
+        <section id="engine-status" class="status-banner loading" aria-live="polite">
+            <span class="spinner" aria-hidden="true"></span>
+            <span id="engine-status-text">Loading local OpenCV engine...</span>
+        </section>
 
-    <div id="ai-status" class="status-bar loading">
-        <span class="spinner"></span> 正在初始化本地 AI 引擎... (首次加载需几秒)
-    </div>
+        <section id="drop-zone" class="drop-zone" tabindex="0" role="button" aria-label="Upload image">
+            <div class="drop-visual">
+                <span class="drop-mark">+</span>
+            </div>
+            <div class="drop-copy">
+                <h2>Drop an image here</h2>
+                <p>PNG, JPG, and WebP supported. Max file size: 12 MB.</p>
+                <p class="drop-meta">Working area is capped for browser safety at 12 MP / 4096 px.</p>
+            </div>
+            <input type="file" id="file-input" accept="image/png, image/jpeg, image/webp" hidden>
+        </section>
 
-    <section id="drop-zone">
-        <div class="icon-upload">📁</div>
-        <p>点击或拖拽图片到这里</p>
-        <span class="file-info">支持 JPG / PNG / WebP，最大 20MB</span>
-        <div id="upload-warning" class="message message-warning" style="display: none;"></div>
-        <div id="upload-error" class="message message-error" style="display: none;"></div>
-        <div id="file-meta" class="file-meta" style="display: none;"></div>
-        <input type="file" id="file-input" accept="image/png, image/jpeg, image/webp" hidden>
-    </section>
+        <section id="workspace" class="workspace hidden">
+            <div class="stage-panel">
+                <div class="stage-toolbar">
+                    <div>
+                        <p class="toolbar-label">Loaded file</p>
+                        <p id="image-meta" class="toolbar-value">No image loaded</p>
+                    </div>
+                    <div class="toolbar-actions">
+                        <button class="ghost-btn" id="btn-undo" disabled>Undo</button>
+                        <button class="ghost-btn" id="btn-redo" disabled>Redo</button>
+                        <button class="ghost-btn" id="btn-compare" disabled>Hold to compare</button>
+                    </div>
+                </div>
 
-    <section class="workspace" id="workspace" style="display: none;">
-        <div class="canvas-wrapper">
-            <canvas id="main-canvas"></canvas>
-            <div id="selection-box"></div>
-        </div>
+                <div class="canvas-shell" id="canvas-shell">
+                    <canvas id="main-canvas"></canvas>
+                    <div id="selection-box"></div>
+                    <div id="busy-overlay" class="busy-overlay hidden">
+                        <span class="spinner" aria-hidden="true"></span>
+                        <span id="busy-label">Processing...</span>
+                    </div>
+                </div>
 
-        <aside class="controls">
-            <div id="process-status" class="status-inline" style="display: none;"></div>
-
-            <div class="tabs">
-                <button class="tab-btn active" data-tab="crop">✂️ 裁剪</button>
-                <button class="tab-btn" data-tab="inpaint">🖌️ 智能修补</button>
-                <button class="tab-btn" data-tab="enhance">✨ 画质增强</button>
+                <p id="inline-message" class="inline-message" aria-live="polite">
+                    Select a region in Inpaint mode, or use Crop for the fastest cleanup pass.
+                </p>
             </div>
 
-            <div id="tab-crop" class="tab-panel active">
-                <div class="control-group">
-                    <label>底部切除高度: <span id="crop-val">40px</span></label>
-                    <input type="range" id="crop-slider" min="0" max="200" value="40">
+            <aside class="control-panel">
+                <div class="control-header">
+                    <p class="toolbar-label">Edit stack</p>
+                    <p id="history-meta" class="toolbar-value">Undo 0 / 6</p>
                 </div>
-                <button class="btn btn-primary" id="btn-apply-crop">应用裁剪</button>
-                <p class="desc">最安全的去水印方式，直接切除底部文字区域。</p>
-            </div>
 
-            <div id="tab-inpaint" class="tab-panel">
-                <div class="alert-box">
-                    <strong>使用说明：</strong> 在左侧图片上框选水印区域，算法将分析周围纹理进行覆盖。
+                <div class="tab-row">
+                    <button class="tab-btn active" data-tab="crop">Crop</button>
+                    <button class="tab-btn" data-tab="inpaint">Inpaint</button>
+                    <button class="tab-btn" data-tab="enhance">Enhance</button>
                 </div>
-                <div class="control-group">
-                    <label>修复半径: <span id="radius-val">3px</span></label>
+
+                <section id="tab-crop" class="tab-panel active">
+                    <div class="panel-copy">
+                        <h3>Bottom crop</h3>
+                        <p>Fastest path when the unwanted area sits at the bottom edge.</p>
+                    </div>
+                    <label for="crop-slider">Crop height <span id="crop-val">40 px</span></label>
+                    <input type="range" id="crop-slider" min="0" max="240" value="40">
+                    <button class="primary-btn" id="btn-apply-crop">Apply crop</button>
+                </section>
+
+                <section id="tab-inpaint" class="tab-panel">
+                    <div class="panel-copy">
+                        <h3>Region inpaint</h3>
+                        <p>Drag a rectangle on the image. The tool samples nearby texture to fill the area.</p>
+                    </div>
+                    <label for="radius-slider">Inpaint radius <span id="radius-val">3 px</span></label>
                     <input type="range" id="radius-slider" min="1" max="20" value="3">
-                </div>
-                <button class="btn btn-primary" id="btn-apply-inpaint" disabled>执行智能修复</button>
-            </div>
+                    <button class="primary-btn" id="btn-apply-inpaint" disabled>Apply inpaint</button>
+                </section>
 
-            <div id="tab-enhance" class="tab-panel">
-                <div class="control-group">
-                    <label>锐化强度: <span id="sharp-val">0.5</span></label>
+                <section id="tab-enhance" class="tab-panel">
+                    <div class="panel-copy">
+                        <h3>Sharpen pass</h3>
+                        <p>Use a mild finishing pass after crop or inpaint if the image looks soft.</p>
+                    </div>
+                    <label for="sharp-slider">Sharpen amount <span id="sharp-val">0.5</span></label>
                     <input type="range" id="sharp-slider" min="0" max="20" value="5">
+                    <button class="primary-btn" id="btn-apply-enhance">Apply sharpen</button>
+                </section>
+
+                <div class="action-stack">
+                    <button class="secondary-btn" id="btn-reset">Reset to original</button>
+                    <button class="success-btn" id="btn-download">Export PNG</button>
                 </div>
-                <button class="btn btn-primary" id="btn-apply-enhance">应用 USM 锐化</button>
-            </div>
+            </aside>
+        </section>
+    </main>
 
-            <div class="export-options">
-                <div class="control-group">
-                    <label for="export-format">导出格式</label>
-                    <select id="export-format">
-                        <option value="png">PNG (无损)</option>
-                        <option value="jpeg">JPG (更小)</option>
-                        <option value="webp">WebP (更小)</option>
-                    </select>
-                </div>
-                <div class="control-group">
-                    <label for="export-quality">导出质量: <span id="export-quality-val">92%</span></label>
-                    <input type="range" id="export-quality" min="10" max="100" value="92">
-                </div>
-            </div>
-
-            <div class="global-actions">
-                <button class="btn btn-secondary" id="btn-compare-toggle" disabled>👁 对比开关</button>
-                <button class="btn btn-secondary" id="btn-compare-hold" disabled>按住看原图</button>
-                <button class="btn btn-secondary" id="btn-undo" disabled>↶ 撤销</button>
-                <button class="btn btn-secondary" id="btn-redo" disabled>↷ 重做</button>
-                <button class="btn btn-secondary" id="btn-reset">↺ 重置</button>
-                <button class="btn btn-success" id="btn-download">💾 保存图片</button>
-            </div>
-        </aside>
-    </section>
-</main>
-
-<script async src="js/opencv.js" onload="onOpenCvReady()" onerror="onOpenCvError()" type="text/javascript"></script>
-<script src="js/processor.js"></script>
-<script src="js/app.js"></script>
-
-<script>
-    window.cvReady = false;
-    window.__opencvRetries = 0;
-    const MAX_OPENCV_RETRIES = 1;
-
-    function appendOpenCvScript() {
-        const script = document.createElement('script');
-        script.async = true;
-        script.src = `js/opencv.js?retry=${Date.now()}`;
-        script.onload = onOpenCvReady;
-        script.onerror = onOpenCvError;
-        document.body.appendChild(script);
-    }
-
-    function manualRetryOpenCv() {
-        window.__opencvRetries = 0;
-        const status = document.getElementById('ai-status');
-        status.className = 'status-bar loading';
-        status.innerHTML = '<span class="spinner"></span> 正在重新加载本地 AI 引擎...';
-        appendOpenCvScript();
-    }
-
-    function onOpenCvReady() {
-        if (typeof cv !== 'undefined' && cv.getBuildInformation) {
-            console.log('Local OpenCV Loaded Successfully');
-            document.getElementById('ai-status').className = 'status-bar ready';
-            document.getElementById('ai-status').innerHTML = '✅ 本地 AI 引擎已就绪';
-            window.cvReady = true;
-        } else {
-            setTimeout(onOpenCvReady, 100);
-        }
-    }
-    
-    function onOpenCvError() {
-        window.cvReady = false;
-        const status = document.getElementById('ai-status');
-
-        if (window.__opencvRetries < MAX_OPENCV_RETRIES) {
-            window.__opencvRetries += 1;
-            status.className = 'status-bar loading';
-            status.innerHTML = `<span class="spinner"></span> OpenCV 加载失败，正在重试 (${window.__opencvRetries}/${MAX_OPENCV_RETRIES})...`;
-            setTimeout(() => appendOpenCvScript(), 500);
-            return;
-        }
-
-        status.className = 'status-bar error';
-        status.innerHTML = '❌ OpenCV 加载失败。<button class="btn-inline" onclick="manualRetryOpenCv()">重试</button>';
-    }
-</script>
-
+    <script src="js/opencv.js" async onload="onOpenCvReady()" onerror="onOpenCvError()"></script>
+    <script src="js/processor.js"></script>
+    <script src="js/app.js"></script>
 </body>
 </html>
