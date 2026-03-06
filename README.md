@@ -1,8 +1,8 @@
-# Gemini Watermark Remover (Web Pro) - PRD Build
+# Aether Image Cleaner (Web) - PRD Build
 
-一个基于纯前端技术 (HTML5 + OpenCV.js) 的智能图片去水印工具，专为消除 Google Gemini 生成图片的底部水印而设计。
+一个基于纯前端技术 (HTML5 + OpenCV.js) 的智能图片清理与修复工具，面向 AI 生成图和普通图片的局部清理场景。
 
-🚀 **在线演示**: [https://gemini.112583.xyz/](https://gemini.112583.xyz/)
+🚀 **在线演示**: 暂未部署（当前以本地运行为主）
 
 ## ✨ 特性
 
@@ -44,7 +44,7 @@
 
 ## 🧩 本分支新增能力
 
-以下为本分支（`gemini-cleaner-web-prd`）相对上游仓库的主要功能改动:
+以下为当前仓库相对上游仓库的主要功能改动:
 
 1. 文件校验与大图保护（大小、分辨率、像素上限）
 2. 处理中状态提示与失败恢复提示

@@ -688,10 +688,10 @@ function downloadImage() {
     try {
         const exportConfig = getExportConfig();
         const link = document.createElement('a');
-        link.download = `gemini-fixed-${Date.now()}.${exportConfig.extension}`;
+        link.download = `aether-cleaned-${Date.now()}.${exportConfig.extension}`;
         link.href = els.canvas.toDataURL(exportConfig.mimeType, exportConfig.quality);
         if (!link.href.startsWith(`data:${exportConfig.mimeType}`)) {
-            link.download = `gemini-fixed-${Date.now()}.png`;
+            link.download = `aether-cleaned-${Date.now()}.png`;
             link.href = els.canvas.toDataURL('image/png');
             showProcessStatus('当前浏览器不支持所选格式，已回退为 PNG。', 'error', 1800);
         }
